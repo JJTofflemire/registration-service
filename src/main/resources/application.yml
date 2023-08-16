@@ -17,6 +17,13 @@ micronaut:
       # Note that an `instance` tag is added at runtime in `Application.java`
       service: registration
 
+grpc:
+  server:
+    ssl:
+      enabled: true
+      cert-chain: classpath:fullchain.pem
+      private-key: classpath:privkey.pem
+
 rate-limits:
   leaky-bucket:
     session-creation:

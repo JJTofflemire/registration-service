@@ -1,22 +1,27 @@
 # Signal Registration-Service Installation Guide
 
-- I am not sure if this explicitly needs to be ran in EC2, but it needs to share certificates with Signal-Server (I think)
+- While this doesn't need to be ran in an EC2 instance, it will simplify nginx configuration
 
   - Because of this, the easiest deployment is [in a docker container](https://github.com/JJTofflemire/Signal-Docker/tree/main/registration-service) in EC2 with nginx set up for both Signal-Server and registration-service
 
 ## Configuration
 
-registration-service trusts `signal.org` by default by referencing `registration-service/src/main/resources/org/signal/registration/cli/signal.pem`
-
-- We can edit the `signal.pem` and replace the certificate with the one certbot generated for us:
+- When `registration-service` is ran in the dev environment, it ignores all normal configuration options and hosts a `http` server on `localhost:50051`. To work around this without having to fully deploy the service, edit the `src/main/resources/application.yml`:
 
 ```
-ssl_trusted_certificate /etc/letsencrypt/live/test-name/chain.pem;
+grpc:
+  server:
+    ssl:
+      enabled: true
+      cert-chain: classpath:fullchain.pem
+      private-key: classpath:privkey.pem
 ```
 
-- `docker exec -it <container-name> bash` into `/etc/letsencrypt/live/test-name/` and `cat` the contents of `chain.pem` into `signal.pem` (there will be multiple certificates but that is okay)
+- This configures the dev environment to expect `https` requests and verifies them with a `fullchain.pem` and `privkey.pem` inside `src/main/resources/`
 
-Then update [Signal-Server's sample.yml](https://github.com/JJTofflemire/Signal-Server/blob/b2e9fcbd13a65f5c7f0126010891a307dc2817c4/docs/documented-sample.yml#L413) with:
+- If you are using the nginx container from Signal-Docker, you can get these certs by `docker exec -it <container-name> bash` into `/etc/letsencrypt/live/<name>/` and `cat`ing out the result
+
+Then update [Signal-Server's sample.yml](https://github.com/JJTofflemire/Signal-Server/blob/b2e9fcbd13a65f5c7f0126010891a307dc2817c4/docs/documented-sample.yml#L413)(if not already dones) with:
 
 ```
 registrationService:
