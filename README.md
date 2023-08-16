@@ -1,154 +1,104 @@
-# Signal registration service
+# Signal Registration-Service Installation Guide
 
-This is a multi-provider phone number verification service for use with Signal.
+- I am not sure if this explicitly needs to be ran in EC2, but it needs to share certificates with Signal-Server (I think)
 
-When Signal users first create an account, they do so by associating that account with a phone number. Signal verifies that users actually control that phone number by sending a verification code to that number via SMS or via a phone call. This service manages the process of sending verification codes and checking codes provided by clients.
-
-## Major components
-
-External callers interact with this service by sending [gRPC](https://grpc.io/) requests. The gRPC interface is defined in [`registration_service.proto`](./src/main/proto/registration_service.proto). gRPC requests are handled by [`RegistrationServiceGrpcEndpoint`](./src/main/java/org/signal/registration/rpc/RegistrationServiceGrpcEndpoint.java), which sanitizes client input and dispatches requests to [`RegistrationService`](./src/main/java/org/signal/registration/RegistrationService.java), which orchestrates the major business logic for the entire service.
-
-`RegistrationService` uses a [`SenderSelectionStrategy`](./src/main/java/org/signal/registration/sender/SenderSelectionStrategy.java) to choose a concrete [`VerificationCodeSender`](./src/main/java/org/signal/registration/sender/VerificationCodeSender.java) implementation to send a verification code to a client. `VerificationCodeSenders` are responsible for sending verification codes via a specific transport (i.e. SMS or voice) and service provider and later for verifying codes provided by clients. A [`SessionRepository`](./src/main/java/org/signal/registration/session/SessionRepository.java) stores session data (i.e. verification codes or references to external verification sessions) for `VerificationCodeSenders`.
+  - Because of this, the easiest deployment is [in a docker container](https://github.com/JJTofflemire/Signal-Docker/tree/main/registration-service) in EC2 with nginx set up for both Signal-Server and registration-service
 
 ## Configuration
 
-At a minimum, the registration service needs at least one `VerificationCodeSender`, a `SenderSelectionStrategy`, and a `SessionRepository`. No beans of those types will be instantiated unless they're configured, and so some configuration properties must be provided. The following table describes the currently-supported (and required, in production environments) configuration properties.
+registration-service trusts `signal.org` by default by referencing `registration-service/src/main/resources/org/signal/registration/cli/signal.pem`
 
-| Property                                                               | Description                                                                                                                                                                                                                                                              |
-|------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `analytics.bigtable.table-id`                                          | The identifier for a Cloud Bigtable table to be used to store verification attempts pending follow-up analysis (optional)                                                                                                                                                |
-| `analytics.bigtable.column-family-name`                                | The name of a column family within `analytics.bigtable.table-id` to be used to store verification attempts pending follow-up analysis (optional)                                                                                                                         |
-| `analytics.pubsub.topic`                                               | The name of a GCP pub/sub topic to which to send events when attempts are fully analyzed                                                                                                                                                                                 |
-| `fictitious-numbers.firestore.collection-name`                         | The name of the Cloud Firestore collection that stores verification codes for fictitious phone numbers                                                                                                                                                                   |
-| `fictitious-numbers.firestore.expiration-field-name`                   | The name of the field in documents in the Cloud Firestore collection for verification codes for fictitious phone numbers that identifies when the document expires and may be removed automatically                                                                      |
-| `gcp.bigtable.project-id`                                              | The identifier for a Google Cloud Platform project that contains the Cloud Bigtable instance to be used for various data storage applications                                                                                                                            |
-| `gcp.bigtable.instance-id`                                             | The identifier for a Cloud Bigtable instance to be used for various data storage applications                                                                                                                                                                            |
-| `messagebird.access-key`                                               | The access key used to authenticate with MessageBird                                                                                                                                                                                                                     |
-| `messagebird.default-sender-id`                                        | The default originating number or alphanumeric sender id for MessageBird messages and calls                                                                                                                                                                              |
-| `messagebird.region-sender-ids`                                        | The originating number or alphanumeric sender id for MessageBird messages and calls by region                                                                                                                                                                            |
-| `messagebird.sms.session-ttl`                                          | The maximum lifetime of a registration started by sending a verification code via MessageBird sms (optional)                                                                                                                                                             |
-| `messagebird.verify.session-ttl`                                       | The maximum lifetime of a registration started by sending a verification code via MessageBird verify (optional)                                                                                                                                                          |
-| `messagebird.voice.session-ttl`                                        | The maximum lifetime of a registration started by sending a verification code via MessageBird voice (optional)                                                                                                                                                           |
-| `messagebird.voice.supported-languages`                                | A list of BCP 47 language tags for which translations of spoken messages delivered via the MessageBird Voice API are available                                                                                                                                           |
-| `prescribed-verification-codes.firestore.collection-name`              | The name of the Cloud Firestore collection that contains prescribed verification codes                                                                                                                                                                                   |
-| `rate-limits.check-verification-code.delays`                           | A list of durations that callers must wait between successive attempts to check verification codes                                                                                                                                                                       |
-| `rate-limits.leaky-bucket.session-creation.max-capacity`               | The maximum number of permits in a session creation rate limiter "bucket"                                                                                                                                                                                                |
-| `rate-limits.leaky-bucket.session-creation.permit-regeneration-period` | The time required for a permit in a session creation rate limiter "bucket" to regenerate                                                                                                                                                                                 |
-| `rate-limits.leaky-bucket.session-creation.min-delay`                  | The minimum amount of time that must elapse between taking permits from a session creation rate limiter "bucket"                                                                                                                                                         |
-| `rate-limits.send-sms-verification-code.delays`                        | A list of durations that callers must wait between successive attempts to send verification codes via SMS                                                                                                                                                                |
-| `rate-limits.send-voice-verification-code.delay-after-first-sms`       | The amount of time a caller must wait after requesting their first SMS before they may request a phone call                                                                                                                                                              |
-| `rate-limits.send-voice-verification-code.delays`                      | A list of durations that callers must wait between successive attempts to send verification codes via phone calls                                                                                                                                                        |
-| `selection.[transport].fallback-senders`                               | A nonempty ordered list of senders to fall back on. The first sender that supports the request will be used, or the first sender if no sender supports the request.                                                                                                      |
-| `selection.[transport].default-weights`                                | A map by service of weights by which requests are assigned to services. (e.g. twilio-verify = 50, messagebird-verify = 50) (optional)                                                                                                                                    |
-| `selection.[transport].region-weights`                                 | A map by region of weights that override the default weights (e.g. us.twilio-verify = 9, us.messagebird-verify = 1) (optional)                                                                                                                                           |
-| `selection.[transport].region-overrides`                               | A map of regions to service that indicate that a region should always go to that service (e.g. de = messagebird-verify) (optional)                                                                                                                                       |
-| `session-repository.bigtable.table-name`                               | The name of the Bigtable table that contains registration sessions                                                                                                                                                                                                       |
-| `session-repository.bigtable.column-family-name`                       | The name of the Bigtable column family name within the configured Bigtable table that contains registration sessions                                                                                                                                                     |
-| `twilio.account-sid`                                                   | The SID of the Twilio account to use to send verification codes via Twilio's [Programmable Messaging](https://www.twilio.com/messaging/programmable-messaging-api), [Programmable Voice](https://www.twilio.com/voice), and [Verify](https://www.twilio.com/verify) APIs |
-| `twilio.api-key-sid`                                                   | The SID of the Twilio API key used to authenticate with Twilio                                                                                                                                                                                                           |
-| `twilio.api-key-secret`                                                | The secret component of the API key used to authenticate with Twilio                                                                                                                                                                                                     |
-| `twilio.messaging.nanpa-messaging-service-sid`                         | The SID of the Twilio messaging service to be used to send SMS messages to [NANPA](https://nationalnanpa.com/) phone numbers                                                                                                                                             |
-| `twilio.messaging.global-messaging-service-sid`                        | The SID of the Twilio messaging service to be used to send SMS messages to phone numbers outside of NANPA                                                                                                                                                                |
-| `twilio.messaging.session-ttl`                                         | The maximum lifetime of a registration started by sending a verification code via the Twilio Programmable Messaging API (optional)                                                                                                                                       |
-| `twilio.voice.phone-numbers`                                           | A list of [E.164](https://www.twilio.com/docs/glossary/what-e164)-formatted phone numbers from which Twilio voice calls can originate                                                                                                                                    |
-| `twilio.voice.cdn-uri`                                                 | The base URI from which voice messages translated to various languages may be retrieved                                                                                                                                                                                  |
-| `twilio.voice.supported-languages`                                     | A list of BCP 47 language tags for which translations of spoken messages delivered via the Twilio Programmable Voice API are available                                                                                                                                   |
-| `twilio.voice.session-ttl`                                             | The maximum lifetime of a registration started by sending a verification code via the Twilio Programmable Voice API (optional)                                                                                                                                           |
-| `twilio.verify.service-sid`                                            | The SID of a Twilio Verify service to be used to send verification codes                                                                                                                                                                                                 |
-| `twilio.verify.service-friendly-name`                                  | A "friendly" name for the Twilio Verify service, which may appear in verification messages (optional)                                                                                                                                                                    |
-| `twilio.verify.android-app-hash`                                       | The app hash to include in SMS messages sent by Twilio Verify for Android devices that support [Automatic SMS Verification](https://developers.google.com/identity/sms-retriever/overview)                                                                               |
-| `twilio.verify.supported-languages`                                    | A list of BCP 47 language tags supported by Twilio Verify                                                                                                                                                                                                                |
-| `verification.sms.android-app-hash`                                    | The app hash to include in SMS messages for Android devices that support [Automatic SMS Verification](https://developers.google.com/identity/sms-retriever/overview)                                                                                                     |
-| `verification.sms.message-variants-by-region`                          | A map of two-letter region codes (e.g. "US") to names of SMS message variants; message variants should have corresponding entries in the SMS message string table                                                                                                        |
-| `verification.[transport].supported-languages`                         | A list of [BCP 47](https://www.rfc-editor.org/rfc/rfc4646.txt) language tags for which translations of a verification SMS message sent via the Twilio Programmable Messaging API are available                                                                           |
-
-### Running in development mode
-
-For local testing, this service can be run in the `dev` [Micronaut environment](https://docs.micronaut.io/latest/guide/#environments). In the `dev` environment, the following components are provided (assuming no others of have been configured):
-
-- A trivial verification code sender that always uses the last six digits of a phone number as a verification code
-- A trivial sender selection strategy that always chooses the last-six-digits "sender"
-- An in-memory session store
-
-These components are, obviously, not suitable for production use and are intended only to facilitate local development and testing.
-
-To run the registration service locally with the `dev` environment enabled:
-
-```shell
-./mvnw mn:run -Dmicronaut.environments=dev
-```
-
-## Testing with command-line tools
-
-The registration service include a set of CLI tools to facilitate testing and development. The tools allow operators to create and inspect registration sessions, send verification codes, and check verification codes.
-
-To build the CLI tools:
-
-```shell
-./mvnw clean package
-```
-
-To run the tool and get an exhaustive list of subcommands and flags:
-
-```shell
-java -cp target/registration-service-0.1.jar org.signal.registration.cli.RegistrationClient
-```
-
-…which yields (at the time of writing):
+- We can edit the `signal.pem` and replace the certificate with the one certbot generated for us:
 
 ```
-Usage: <main class> [--api-key=<apiKey>] [--host=<host>] [--port=<port>]
-                    [[--plaintext] |
-                    --trusted-server-certificate=<trustedServerCertificate>]
-                    [COMMAND]
-      --api-key=<apiKey>   API key for this call
-      --host=<host>        Registration service hostname (default: localhost)
-      --plaintext          Use plaintext instead of TLS? (default: false)
-      --port=<port>        Registration service port (default: 50051)
-      --trusted-server-certificate=<trustedServerCertificate>
-                           Path to a trusted server certificate; signal.org
-                           certificate trusted by default
-Commands:
-  create-session, create          Start a new registration session
-  get-session, get                Describe an existing registration session
-  send-verification-code, send    Send a verification code to a phone number
-                                  associated with a session
-  check-verification-code, check  Check a verification code for a registration
-                                  session
+ssl_trusted_certificate /etc/letsencrypt/live/test-name/chain.pem;
 ```
 
-As a concrete example of interacting with a local registration service running on port 50051, callers may create a registration session with the following command:
+- `docker exec -it <container-name> bash` into `/etc/letsencrypt/live/test-name/` and `cat` the contents of `chain.pem` into `signal.pem` (there will be multiple certificates but that is okay)
 
-```shell
-java -cp target/registration-service-0.1.jar org.signal.registration.cli.RegistrationClient \
-  --host=localhost \
-  --port=50051 \
-  --plaintext \
-  create-session +18005550123
-```
-
-…which yields (in this example):
+Then update [Signal-Server's sample.yml](https://github.com/JJTofflemire/Signal-Server/blob/b2e9fcbd13a65f5c7f0126010891a307dc2817c4/docs/documented-sample.yml#L413) with:
 
 ```
-Created registration session 2a3d2a2a41ff41fb9ce41687ddcc51a4
+registrationService:
+  host: chat.your.domain
+  port: 442
+
+. . .
+
+  identityTokenAudience: https://chat.your.domain
+  registrationCaCertificate: |
+    -----BEGIN CERTIFICATE-----
+    MIIFFjCCAv6gAwIBAgIRAJErCErPDBinU/bWLiWnX1owDQYJKoZIhvcNAQELBQAw
+    TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
+    cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMjAwOTA0MDAwMDAw
+    WhcNMjUwOTE1MTYwMDAwWjAyMQswCQYDVQQGEwJVUzEWMBQGA1UEChMNTGV0J3Mg
+    RW5jcnlwdDELMAkGA1UEAxMCUjMwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEK
+    AoIBAQC7AhUozPaglNMPEuyNVZLD+ILxmaZ6QoinXSaqtSu5xUyxr45r+XXIo9cP
+    R5QUVTVXjJ6oojkZ9YI8QqlObvU7wy7bjcCwXPNZOOftz2nwWgsbvsCUJCWH+jdx
+    sxPnHKzhm+/b5DtFUkWWqcFTzjTIUu61ru2P3mBw4qVUq7ZtDpelQDRrK9O8Zutm
+    NHz6a4uPVymZ+DAXXbpyb/uBxa3Shlg9F8fnCbvxK/eG3MHacV3URuPMrSXBiLxg
+    Z3Vms/EY96Jc5lP/Ooi2R6X/ExjqmAl3P51T+c8B5fWmcBcUr2Ok/5mzk53cU6cG
+    /kiFHaFpriV1uxPMUgP17VGhi9sVAgMBAAGjggEIMIIBBDAOBgNVHQ8BAf8EBAMC
+    AYYwHQYDVR0lBBYwFAYIKwYBBQUHAwIGCCsGAQUFBwMBMBIGA1UdEwEB/wQIMAYB
+    Af8CAQAwHQYDVR0OBBYEFBQusxe3WFbLrlAJQOYfr52LFMLGMB8GA1UdIwQYMBaA
+    FHm0WeZ7tuXkAXOACIjIGlj26ZtuMDIGCCsGAQUFBwEBBCYwJDAiBggrBgEFBQcw
+    AoYWaHR0cDovL3gxLmkubGVuY3Iub3JnLzAnBgNVHR8EIDAeMBygGqAYhhZodHRw
+    Oi8veDEuYy5sZW5jci5vcmcvMCIGA1UdIAQbMBkwCAYGZ4EMAQIBMA0GCysGAQQB
+    gt8TAQEBMA0GCSqGSIb3DQEBCwUAA4ICAQCFyk5HPqP3hUSFvNVneLKYY611TR6W
+    PTNlclQtgaDqw+34IL9fzLdwALduO/ZelN7kIJ+m74uyA+eitRY8kc607TkC53wl
+    ikfmZW4/RvTZ8M6UK+5UzhK8jCdLuMGYL6KvzXGRSgi3yLgjewQtCPkIVz6D2QQz
+    CkcheAmCJ8MqyJu5zlzyZMjAvnnAT45tRAxekrsu94sQ4egdRCnbWSDtY7kh+BIm
+    lJNXoB1lBMEKIq4QDUOXoRgffuDghje1WrG9ML+Hbisq/yFOGwXD9RiX8F6sw6W4
+    avAuvDszue5L3sz85K+EC4Y/wFVDNvZo4TYXao6Z0f+lQKc0t8DQYzk1OXVu8rp2
+    yJMC6alLbBfODALZvYH7n7do1AZls4I9d1P4jnkDrQoxB3UqQ9hVl3LEKQ73xF1O
+    yK5GhDDX8oVfGKF5u+decIsH4YaTw7mP3GFxJSqv3+0lUFJoi5Lc5da149p90Ids
+    hCExroL1+7mryIkXPeFM5TgO9r0rvZaBFOvV2z0gp35Z0+L4WPlbuEjN/lxPFin+
+    HlUjr8gRsI3qfJOQFy/9rKIJR0Y/8Omwt/8oTWgy1mdeHmmjk7j1nYsvC9JSQ6Zv
+    MldlTTKB3zhThV1+XWYp6rjd5JW1zbVWEkLNxE7GJThEUG3szgBVGP7pSWTUTsqX
+    nLRbwHOoq7hHwg==
+    -----END CERTIFICATE-----
 ```
 
-To send an SMS verification code for that session:
+The `registrationService` `host` and `port` specify where your registration-service instance is running, and the Signal-Server will attempt to connect to it over `https`
 
-```shell
-java -cp target/registration-service-0.1.jar org.signal.registration.cli.RegistrationClient \
-  --host=localhost \
-  --port=50051 \
-  --plaintext \
-  send-verification-code 2a3d2a2a41ff41fb9ce41687ddcc51a4
+The `registrationCaCertificate` is a root certificate taken from [letsencrypt.org](letsencrypt.org) - you can also get the `.pem` [here](https://letsencrypt.org/certificates/) - select the Active, Self-signed pem link
+
+## Running with the Dev Environment
+
+Signalapp provided a dev environment that can be used with testing
+
+- It uses the last six digits of the input phone number as the verification code
+
+- The dev environment creates local databases and stores all data in memory, which is lost when stopped or runs out of memory
+
+```
+./mvnw clean mn:run -Dmicronaut.environments=dev
 ```
 
-…and, finally, to submit a verification code for that session:
+## General Notes
 
-```shell
-java -cp target/registration-service-0.1.jar org.signal.registration.cli.RegistrationClient \
-  --host=localhost \
-  --port=50051 \
-  --plaintext \
-  check-verification-code 2a3d2a2a41ff41fb9ce41687ddcc51a4 550123
+This repo is a bit of a mess because Signal's developers didn't provide a `sample.yml` to work off of
+
+As far as I understand, you need to  reproduce a `config.yml` based on the table they provided:
+
+ - For example:
+
+From: `analytics.bigtable.table-id`
+
+```
+analytics:
+  bigtable:
+    table-id: example
+```
+
+And possibly named `application-dev.yml` based on [Signalapp's .gitignore](.gitignore)
+
+- [Here is a `sample.yml`](sample.yml) generated by ChatGPT that could be a start for actual deployment
+
+This server is gRPC, so you can't use `curl`. Instead, `grpcurl` can be used
+
+- You can install it either through your package manager or with [a binary](https://github.com/fullstorydev/grpcurl#installation)
+
+```
+grpcurl -plaintext -d '{"e164": "phone-number"}' -import-path src/main/proto -proto registration_service.proto 127.0.0.1:50051 org.signal.registration.rpc.RegistrationService/CreateSession
 ```
