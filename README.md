@@ -1,6 +1,10 @@
 # Signal Registration-Service Installation Guide
 
+- For compatibility with Signal-Server v9.81.0, this repo forked an older version of `registration-service` (`5c0b4162a633564771851b2bddb160f929d50c79`)
+
 - While this doesn't need to be ran in an EC2 instance, it will simplify nginx configuration
+
+  - Note: the docker container is still broken for some reason
 
   - Because of this, the easiest deployment is [in a docker container](https://github.com/JJTofflemire/Signal-Docker/tree/main/registration-service) in EC2 with nginx set up for both Signal-Server and registration-service
 
