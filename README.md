@@ -6,7 +6,7 @@
 
   - Note: the docker container is still broken for some reason
 
-  - Because of this, the easiest deployment is [in a docker container](https://github.com/JJTofflemire/Signal-Docker/tree/main/registration-service) in EC2 with nginx set up for both Signal-Server and registration-service
+  - Because of this, the easiest deployment is [in a docker container](https://github.com/jtof-dev/Signal-Docker/tree/main/registration-service) in EC2 with nginx set up for both Signal-Server and registration-service
 
 ## Configuration
 
@@ -25,7 +25,7 @@ grpc:
 
 - If you are using the nginx container from Signal-Docker, you can get these certs by `docker exec -it <container-name> bash` into `/etc/letsencrypt/live/<name>/` and `cat`ing out the result
 
-Then update [Signal-Server's sample.yml](https://github.com/JJTofflemire/Signal-Server/blob/b2e9fcbd13a65f5c7f0126010891a307dc2817c4/docs/documented-sample.yml#L413)(if not already dones) with:
+Then update [Signal-Server's sample.yml](https://github.com/jtof-dev/Signal-Server/blob/b2e9fcbd13a65f5c7f0126010891a307dc2817c4/docs/documented-sample.yml#L413)(if not already dones) with:
 
 ```
 registrationService:
